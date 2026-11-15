@@ -1,0 +1,116 @@
+diff -ru orig/chatgpt-desktop-atelier-debian-kde/atelier_codex.py silus/atelier_codex.py
+--- orig/chatgpt-desktop-atelier-debian-kde/atelier_codex.py	2026-11-15 14:52:50.000000000 +0100
++++ silus/atelier_codex.py	2026-11-15 18:19:45.457642818 +0100
+@@ -32,18 +32,26 @@
+ 
+ 
+ def paths(args: argparse.Namespace) -> list[Path]:
+-    result = [Path(args.atelier).expanduser().absolute()]
+-    if args.partage:
+-        result.append(Path(args.partage).expanduser().absolute())
++    home = Path.home().resolve()
++    raws = [args.atelier] + ([args.partage] if args.partage else [])
++    result = []
++    for raw in raws:
++        p = Path(raw).expanduser()
++        if p.is_symlink():
++            die('Racine symbolique refusée : ' + p.name)
++        # Normaliser AVANT les contrôles : « ~/Arche/x/.. » vaut ~/Arche.
++        p = p.resolve(strict=False)
++        if p == home or p == home / 'Arche' or p == Path('/'):
++            die('Racine trop large : refuser le HOME, ~/Arche entier ou /.')
++        if not p.is_relative_to(home):
++            die('Racine hors HOME ou parent symbolique hors HOME refusé : ' + p.name)
++        # ~/.codex rendrait config.toml modifiable par l'agent (auto-élévation) ;
++        # ~/.config, ~/.local, ~/.ssh… ouvrent autostart, PATH ou clés.
++        if p.relative_to(home).parts[0].startswith('.'):
++            die('Dossier caché du HOME refusé (~/.codex, ~/.config, ~/.local, ~/.ssh…) : ' + p.relative_to(home).parts[0])
++        result.append(p)
+     if len(set(result)) != len(result):
+         die('Les deux dossiers autorisés sont identiques.')
+-    for p in result:
+-        if p == Path.home() or p == Path.home() / 'Arche' or p == Path('/'):
+-            die('Racine trop large : refuser le HOME, ~/Arche entier ou /.')
+-        if not p.is_relative_to(Path.home()):
+-            die('Cet outil limite les racines configurables au HOME local.')
+-        if p.is_symlink() or not p.resolve(strict=False).is_relative_to(Path.home().resolve()):
+-            die('Racine ou parent symbolique hors HOME refusé : ' + p.name)
+     return result
+ 
+ 
+@@ -169,7 +177,8 @@
+         print('Échec écriture. Copie préalable conservée : ' + b.name, file=sys.stderr)
+         raise
+     print('Configuration mise à jour. Copie de retour arrière : ' + b.name)
+-    print('Fermer puis relancer ChatGPT Desktop ; exécuter les tests manuels dans docs/TESTS.md.')
++    print('Relancer ChatGPT Desktop, puis lancer « check » : l’app peut réécrire config.toml.')
++    print('Exécuter ensuite les tests manuels de docs/TESTS.md.')
+     print('ATTENTION : ne pas ouvrir HOME ou ~/Arche entier comme projet actif.')
+ 
+ 
+diff -ru orig/chatgpt-desktop-atelier-debian-kde/CHANGELOG.md silus/CHANGELOG.md
+--- orig/chatgpt-desktop-atelier-debian-kde/CHANGELOG.md	2026-11-15 14:53:18.000000000 +0100
++++ silus/CHANGELOG.md	2026-11-15 18:19:58.265748321 +0100
+@@ -1,5 +1,12 @@
+ # Historique
+ 
++## 0.1.2 — 2026-11-15 (correctif contre-audit Silus)
++
++- `paths()` : normalisation avant contrôle (`~/Arche/x/..` n'échappe plus au refus de `~/Arche`).
++- Refus des dossiers cachés du HOME comme racines : `~/.codex` permettait à l'agent de réécrire sa propre politique ; `~/.config`, `~/.local` ouvraient autostart et PATH.
++- Doc : fermer l'app avant `--apply`, relancer `check` après le premier démarrage.
++- Deux tests ajoutés (8/8).
++
+ ## 0.1.1 — 2026-11-15 (candidate à contre-audit)
+ 
+ - Consolidation des conclusions de Silus sur la politique de session (T0) et ses limites.
+diff -ru orig/chatgpt-desktop-atelier-debian-kde/README.md silus/README.md
+--- orig/chatgpt-desktop-atelier-debian-kde/README.md	2026-11-15 14:53:20.000000000 +0100
++++ silus/README.md	2026-11-15 18:19:58.265748321 +0100
+@@ -36,7 +36,7 @@
+ python3 atelier_codex.py install --atelier "$HOME/Arche/atelier-ael" --partage "$HOME/Arche/partage-claude"
+ ```
+ 
+-Cette première commande est une **simulation sans changement**. Après examen du résultat :
++Cette première commande est une **simulation sans changement**. Après examen du résultat, **fermer ChatGPT Desktop** (l'app peut réécrire `config.toml` pendant qu'elle tourne), puis :
+ 
+ ```bash
+ python3 atelier_codex.py install --atelier "$HOME/Arche/atelier-ael" --partage "$HOME/Arche/partage-claude" --apply
+@@ -54,11 +54,12 @@
+ 2. place les clés globales **avant** le premier en-tête TOML (`[desktop]`, par exemple) ;
+ 3. crée les dossiers d'atelier nécessaires (sans toucher aux fichiers qu'ils contiennent) ;
+ 4. réalise une copie privée `~/.codex/config.toml.atelier-backup-YYYYMMDDTHHMMSSZ`, puis un remplacement atomique du fichier ;
+-5. conserve les sections préexistantes de plugins et de MCP ; ne les lit pas en sortie ni ne les modifie.
++5. conserve les sections préexistantes de plugins et de MCP ; ne les lit pas en sortie ni ne les modifie ;
++6. normalise les chemins (`..`, liens) **avant** contrôle et refuse le HOME, `~/Arche` entier, tout chemin hors HOME et **tout dossier caché du HOME** : `~/.codex` rendrait `config.toml` modifiable par l'agent lui-même, `~/.config` ou `~/.local` ouvriraient autostart et PATH.
+ 
+ **Cas particulier** : si la section `[sandbox_workspace_write]` existe avec des valeurs incompatibles, l'installateur s'arrête. Vérifier manuellement et faire contre-auditer la configuration ; le script évite de réécrire une politique de sécurité existante sans contexte.
+ 
+-Après installation, **fermer et relancer l'app Desktop**, sélectionner explicitement le **projet atelier** et le mode **Demander l'approbation**. Un sélecteur d'interface peut surcharger la configuration du fichier : **vérifier la politique effective**, voir `docs/TESTS.md`.
++Après installation, **fermer et relancer l'app Desktop**, sélectionner explicitement le **projet atelier** et le mode **Demander l'approbation**. Un sélecteur d'interface peut surcharger la configuration du fichier : **vérifier la politique effective**, voir `docs/TESTS.md`. Relancer aussi `check` après le premier démarrage : il confirme que l'app n'a pas retiré les clés en réécrivant son fichier.
+ 
+ ## Vérification statique
+ 
+diff -ru orig/chatgpt-desktop-atelier-debian-kde/tests/test_atelier_codex.py silus/tests/test_atelier_codex.py
+--- orig/chatgpt-desktop-atelier-debian-kde/tests/test_atelier_codex.py	2026-11-15 14:43:16.000000000 +0100
++++ silus/tests/test_atelier_codex.py	2026-11-15 18:19:45.457642818 +0100
+@@ -74,5 +74,19 @@
+     def test_reject_home_root(self):
+         self.run_tool('install', '--atelier', str(self.home), '--apply', ok=False)
+ 
++    # --- contre-audit Silus ---
++    def test_reject_hidden_home_dirs(self):
++        for d in ('.codex', '.config', '.local/bin', '.ssh'):
++            before = self.conf.read_bytes()
++            self.run_tool('install', '--atelier', str(self.home / d), '--apply', ok=False)
++            self.assertEqual(self.conf.read_bytes(), before, d)
++
++    def test_dotdot_is_normalized_before_checks(self):
++        (self.home / 'Arche/x').mkdir(parents=True)
++        self.run_tool('install', '--atelier', str(self.home / 'Arche/x/..'), '--apply', ok=False)
++        self.run_tool('install', '--atelier', str(self.home / '.codex/../Arche/at'), '--apply')
++        data = tomllib.loads(self.conf.read_text())
++        self.assertEqual(data['sandbox_workspace_write']['writable_roots'], [str((self.home / 'Arche/at').resolve())])
++
+ if __name__ == '__main__':
+     unittest.main()
